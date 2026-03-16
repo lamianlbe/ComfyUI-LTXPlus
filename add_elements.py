@@ -1,8 +1,35 @@
 import comfy
 import comfy_extras.nodes_lt as nodes_lt
+import node_helpers
 
-from .iclora_attention import append_guide_attention_entry
 from .nodes_registry import comfy_node
+
+
+def _append_guide_attention_entry(conditioning, pre_filter_count, latent_shape):
+    """Append a guide attention entry to conditioning metadata.
+
+    Equivalent to ComfyUI-LTXVideo's iclora_attention.append_guide_attention_entry
+    with default attention_strength=1.0 and no attention_mask.
+    """
+    # Read existing entries
+    entries = []
+    for t in conditioning:
+        existing = t[1].get("guide_attention_entries", None)
+        if existing is not None:
+            entries = [*existing]
+            break
+
+    entries.append(
+        {
+            "pre_filter_count": pre_filter_count,
+            "strength": 1.0,
+            "pixel_mask": None,
+            "latent_shape": latent_shape,
+        }
+    )
+    return node_helpers.conditioning_set_values(
+        conditioning, {"guide_attention_entries": entries}
+    )
 
 
 @comfy_node(name="LTXVideoAddElements")
@@ -175,10 +202,10 @@ class LTXVideoAddElements:
                 guide_latent.shape[2] * guide_latent.shape[3] * guide_latent.shape[4]
             )
             guide_latent_shape = list(guide_latent.shape[2:])
-            positive = append_guide_attention_entry(
+            positive = _append_guide_attention_entry(
                 positive, pre_filter_count, guide_latent_shape
             )
-            negative = append_guide_attention_entry(
+            negative = _append_guide_attention_entry(
                 negative, pre_filter_count, guide_latent_shape
             )
 
