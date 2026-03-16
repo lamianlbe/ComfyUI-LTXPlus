@@ -1,8 +1,19 @@
+import sys
+
 import comfy
 import comfy_extras.nodes_lt as nodes_lt
 
-from .latents import LTXVAddLatentGuide
 from .nodes_registry import comfy_node
+
+
+def _get_add_latent_guide():
+    """Get LTXVAddLatentGuide class from ComfyUI-LTXVideo plugin at runtime."""
+    # ComfyUI loads custom nodes as top-level modules by folder name
+    ltxvideo_latents = sys.modules.get("ComfyUI-LTXVideo.latents")
+    if ltxvideo_latents is None:
+        import importlib
+        ltxvideo_latents = importlib.import_module("ComfyUI-LTXVideo.latents")
+    return ltxvideo_latents.LTXVAddLatentGuide
 
 
 @comfy_node(name="LTXVideoAddElements")
@@ -125,6 +136,7 @@ class LTXVideoAddElements:
         width = latent_samples.shape[4] * width_scale_factor
         height = latent_samples.shape[3] * height_scale_factor
 
+        LTXVAddLatentGuide = _get_add_latent_guide()
         add_latent_guide = LTXVAddLatentGuide()
 
         for i, (image, strength) in enumerate(guides):
