@@ -1,35 +1,8 @@
 import comfy
 import comfy_extras.nodes_lt as nodes_lt
-import node_helpers
 
+from .latents import LTXVAddLatentGuide
 from .nodes_registry import comfy_node
-
-
-def _append_guide_attention_entry(conditioning, pre_filter_count, latent_shape):
-    """Append a guide attention entry to conditioning metadata.
-
-    Equivalent to ComfyUI-LTXVideo's iclora_attention.append_guide_attention_entry
-    with default attention_strength=1.0 and no attention_mask.
-    """
-    # Read existing entries
-    entries = []
-    for t in conditioning:
-        existing = t[1].get("guide_attention_entries", None)
-        if existing is not None:
-            entries = [*existing]
-            break
-
-    entries.append(
-        {
-            "pre_filter_count": pre_filter_count,
-            "strength": 1.0,
-            "pixel_mask": None,
-            "latent_shape": latent_shape,
-        }
-    )
-    return node_helpers.conditioning_set_values(
-        conditioning, {"guide_attention_entries": entries}
-    )
 
 
 @comfy_node(name="LTXVideoAddElements")
@@ -145,21 +118,19 @@ class LTXVideoAddElements:
         if trim_amount == 0:
             return (positive, negative, latent, 0)
 
+        # Get pixel dimensions from latent
         scale_factors = vae.downscale_index_formula
         _, width_scale_factor, height_scale_factor = scale_factors
         latent_samples = latent["samples"]
-        noise_mask = nodes_lt.get_noise_mask(latent)
-        _, _, latent_length, latent_height, latent_width = latent_samples.shape
-        width = latent_width * width_scale_factor
-        height = latent_height * height_scale_factor
+        width = latent_samples.shape[4] * width_scale_factor
+        height = latent_samples.shape[3] * height_scale_factor
+
+        add_latent_guide = LTXVAddLatentGuide()
 
         for i, (image, strength) in enumerate(guides):
             # latent_idx: last guide is -1, going backwards
             # e.g. 3 guides: -3, -2, -1
             latent_idx = -(trim_amount - i)
-
-            # Convert latent_idx to frame_idx (latent_idx <= 0)
-            frame_idx = latent_idx * scale_factors[0]
 
             # Resize image to match latent dimensions
             image = (
@@ -170,47 +141,24 @@ class LTXVideoAddElements:
                 .clamp(0, 1)
             )
 
-            # Preprocess with CRF (same as LTXVPreprocess)
+            # Step 1: LTXVPreprocess (CRF compression)
             image = nodes_lt.LTXVPreprocess().execute(image, img_compression)[0]
 
-            # Encode image to latent space
-            _, guide_latent = nodes_lt.LTXVAddGuide.encode(
-                vae, latent_width, latent_height, image, scale_factors
+            # Step 2: VAE Encode
+            guiding_latent = {"samples": vae.encode(image[:, :, :, :3])}
+
+            # Step 3: LTXV Add Latent Guide
+            positive, negative, latent = add_latent_guide.generate(
+                vae=vae,
+                positive=positive,
+                negative=negative,
+                latent=latent,
+                guiding_latent=guiding_latent,
+                latent_idx=latent_idx,
+                strength=strength,
             )
 
-            # Compute frame index
-            frame_idx, _ = nodes_lt.LTXVAddGuide.get_latent_index(
-                positive, latent_length, len(image), frame_idx, scale_factors
-            )
-
-            # Append keyframe to conditioning
-            positive, negative, latent_samples, noise_mask = (
-                nodes_lt.LTXVAddGuide.append_keyframe(
-                    positive,
-                    negative,
-                    frame_idx,
-                    latent_samples,
-                    noise_mask,
-                    guide_latent,
-                    strength,
-                    scale_factors,
-                )
-            )
-
-            # Track guide in iclora attention entries
-            pre_filter_count = (
-                guide_latent.shape[2] * guide_latent.shape[3] * guide_latent.shape[4]
-            )
-            guide_latent_shape = list(guide_latent.shape[2:])
-            positive = _append_guide_attention_entry(
-                positive, pre_filter_count, guide_latent_shape
-            )
-            negative = _append_guide_attention_entry(
-                negative, pre_filter_count, guide_latent_shape
-            )
-
-        out_latent = {"samples": latent_samples, "noise_mask": noise_mask}
-        return (positive, negative, out_latent, trim_amount)
+        return (positive, negative, latent, trim_amount)
 
 
 @comfy_node(name="LTXVideoTrimLatent")
