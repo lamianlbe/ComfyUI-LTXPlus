@@ -300,7 +300,8 @@ class LTXVideoLoadMedia:
             },
         }
 
-    RETURN_TYPES = ("IMAGE", "MASK")
+    RETURN_TYPES = ("IMAGE", "MASK", "BOOLEAN")
+    RETURN_NAMES = ("image", "mask", "loaded")
     FUNCTION = "load_media"
     CATEGORY = "image"
 
@@ -311,19 +312,19 @@ class LTXVideoLoadMedia:
 
     def load_media(self, media, frame_id, bypass):
         if bypass:
-            return (None, None)
+            return (None, None, False)
 
         try:
             filepath = folder_paths.get_annotated_filepath(media)
             if not os.path.isfile(filepath):
                 logger.warning(f"LTXVideoLoadMedia: file not found: {filepath}")
-                return (None, None)
+                return (None, None, False)
 
             image, mask = _load_frame(filepath, frame_id)
-            return (image, mask)
+            return (image, mask, image is not None)
         except Exception as e:
             logger.warning(f"LTXVideoLoadMedia: failed to load media: {e}")
-            return (None, None)
+            return (None, None, False)
 
     @classmethod
     def IS_CHANGED(s, media, frame_id, bypass):
