@@ -275,7 +275,7 @@ class LTXVideoLoadMedia:
         files = _list_media_files()
         return {
             "required": {
-                "media": (files if files else ["none"],),
+                "media": (["none"] + files,),
                 "frame_id": (
                     "INT",
                     {
@@ -311,7 +311,7 @@ class LTXVideoLoadMedia:
     )
 
     def load_media(self, media, frame_id, bypass):
-        if bypass:
+        if bypass or media == "none":
             return (None, None, False)
 
         try:
