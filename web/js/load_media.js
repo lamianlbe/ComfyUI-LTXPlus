@@ -1,6 +1,13 @@
 import { app } from "/scripts/app.js";
+import { api } from "/scripts/api.js";
 
 const NODE_TYPE = "LTXVideoLoadMedia";
+
+const ACCEPTED_TYPES =
+  "image/png,image/jpeg,image/gif,image/webp,image/apng,image/bmp,image/tiff," +
+  "video/mp4,video/avi,video/x-msvideo,video/quicktime,video/x-matroska,video/webm," +
+  ".png,.jpg,.jpeg,.gif,.webp,.apng,.bmp,.tiff,.tif," +
+  ".mp4,.avi,.mov,.mkv,.webm,.flv,.wmv,.m4v";
 
 /**
  * Fetch a preview frame from the backend and display it on the node.
@@ -116,6 +123,61 @@ app.registerExtension({
         };
       }
     }
+
+    // Custom upload button that accepts images AND videos
+    node.addWidget(
+      "button",
+      "upload_media",
+      "Choose file to upload",
+      async () => {
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = ACCEPTED_TYPES;
+        input.style.display = "none";
+        document.body.appendChild(input);
+
+        input.addEventListener("change", async () => {
+          if (!input.files || input.files.length === 0) return;
+
+          const file = input.files[0];
+          const formData = new FormData();
+          formData.append("image", file, file.name);
+          formData.append("overwrite", "true");
+
+          try {
+            const resp = await api.fetchApi("/upload/image", {
+              method: "POST",
+              body: formData,
+            });
+            const result = await resp.json();
+
+            if (result.name) {
+              const mediaWidget = node.widgets.find(
+                (w) => w.name === "media"
+              );
+              if (mediaWidget) {
+                if (
+                  mediaWidget.options &&
+                  mediaWidget.options.values &&
+                  !mediaWidget.options.values.includes(result.name)
+                ) {
+                  mediaWidget.options.values.push(result.name);
+                }
+                mediaWidget.value = result.name;
+                mediaWidget.callback?.(result.name);
+              }
+            }
+          } catch (e) {
+            console.error("LTXVideoLoadMedia: upload failed:", e);
+            alert("Upload failed: " + e.message);
+          } finally {
+            document.body.removeChild(input);
+          }
+        });
+
+        input.click();
+      }
+    );
 
     // Draw frame count badge on the node
     const origDrawForeground = node.onDrawForeground;

@@ -275,7 +275,7 @@ class LTXVideoLoadMedia:
         files = _list_media_files()
         return {
             "required": {
-                "media": (files if files else ["none"], {"image_upload": True}),
+                "media": (files if files else ["none"],),
                 "frame_id": (
                     "INT",
                     {
