@@ -95,6 +95,25 @@ app.registerExtension({
       previewTimer = setTimeout(() => updatePreview(node), 200);
     };
 
+    // Helper: intercept value changes on a widget via property descriptor,
+    // which catches slider drags, keyboard input, and programmatic updates
+    // that do not fire the callback.
+    function interceptValue(widget, onChange) {
+      let inner = widget.value;
+      Object.defineProperty(widget, "value", {
+        get() {
+          return inner;
+        },
+        set(v) {
+          if (v !== inner) {
+            inner = v;
+            onChange(v);
+          }
+        },
+        configurable: true,
+      });
+    }
+
     // Hook into widget value changes
     for (const w of node.widgets || []) {
       if (w.name === "media") {
@@ -104,6 +123,10 @@ app.registerExtension({
           updateFrameCount(node);
           schedulePreview();
         };
+        interceptValue(w, () => {
+          updateFrameCount(node);
+          schedulePreview();
+        });
         // Initial load
         setTimeout(() => {
           updateFrameCount(node);
@@ -115,12 +138,18 @@ app.registerExtension({
           origCallback?.apply(this, args);
           schedulePreview();
         };
+        interceptValue(w, () => {
+          schedulePreview();
+        });
       } else if (w.name === "bypass") {
         const origCallback = w.callback;
         w.callback = function (...args) {
           origCallback?.apply(this, args);
           schedulePreview();
         };
+        interceptValue(w, () => {
+          schedulePreview();
+        });
       }
     }
 
