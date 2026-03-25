@@ -114,16 +114,47 @@ app.registerExtension({
       });
     }
 
+    // Track whether the node previously had a valid (loaded) output.
+    // When transitioning from loaded → none/bypass, refresh the page
+    // to clear stale downstream state that causes the UI to freeze.
+    function hasValidOutput() {
+      const mediaW = node.widgets?.find((w) => w.name === "media");
+      const bypassW = node.widgets?.find((w) => w.name === "bypass");
+      const file = mediaW?.value;
+      if (!file || file === "none") return false;
+      if (bypassW?.value === true) return false;
+      return true;
+    }
+
+    let prevValid = false;
+    // Set initial state after widgets are ready
+    setTimeout(() => {
+      prevValid = hasValidOutput();
+    }, 100);
+
+    function checkAndRefresh() {
+      const nowValid = hasValidOutput();
+      if (prevValid && !nowValid) {
+        // Transition from valid output to none/bypass — reload to clear stale state
+        prevValid = nowValid;
+        setTimeout(() => location.reload(), 100);
+        return;
+      }
+      prevValid = nowValid;
+    }
+
     // Hook into widget value changes
     for (const w of node.widgets || []) {
       if (w.name === "media") {
         const origCallback = w.callback;
         w.callback = function (...args) {
           origCallback?.apply(this, args);
+          checkAndRefresh();
           updateFrameCount(node);
           schedulePreview();
         };
         interceptValue(w, () => {
+          checkAndRefresh();
           updateFrameCount(node);
           schedulePreview();
         });
@@ -145,9 +176,11 @@ app.registerExtension({
         const origCallback = w.callback;
         w.callback = function (...args) {
           origCallback?.apply(this, args);
+          checkAndRefresh();
           schedulePreview();
         };
         interceptValue(w, () => {
+          checkAndRefresh();
           schedulePreview();
         });
       }

@@ -311,24 +311,20 @@ class LTXVideoLoadMedia:
     )
 
     def load_media(self, media, frame_id, bypass):
-        from comfy_execution.graph import ExecutionBlocker
-
         if bypass or media == "none":
-            return (ExecutionBlocker(None), ExecutionBlocker(None), False)
+            return (None, None, False)
 
         try:
             filepath = folder_paths.get_annotated_filepath(media)
             if not os.path.isfile(filepath):
                 logger.warning(f"LTXVideoLoadMedia: file not found: {filepath}")
-                return (ExecutionBlocker(None), ExecutionBlocker(None), False)
+                return (None, None, False)
 
             image, mask = _load_frame(filepath, frame_id)
-            if image is None:
-                return (ExecutionBlocker(None), ExecutionBlocker(None), False)
-            return (image, mask, True)
+            return (image, mask, image is not None)
         except Exception as e:
             logger.warning(f"LTXVideoLoadMedia: failed to load media: {e}")
-            return (ExecutionBlocker(None), ExecutionBlocker(None), False)
+            return (None, None, False)
 
     @classmethod
     def IS_CHANGED(s, media, frame_id, bypass):
