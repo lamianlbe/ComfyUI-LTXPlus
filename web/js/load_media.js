@@ -154,7 +154,6 @@ app.registerExtension({
           schedulePreview();
         };
         interceptValue(w, () => {
-          checkAndRefresh();
           updateFrameCount(node);
           schedulePreview();
         });
@@ -180,7 +179,6 @@ app.registerExtension({
           schedulePreview();
         };
         interceptValue(w, () => {
-          checkAndRefresh();
           schedulePreview();
         });
       }
