@@ -311,31 +311,24 @@ class LTXVideoLoadMedia:
     )
 
     def load_media(self, media, frame_id, bypass):
+        from comfy_execution.graph import ExecutionBlocker
+
         if bypass or media == "none":
-            # Return 1x1 transparent placeholder so downstream nodes get valid tensors
-            empty_image = torch.zeros(1, 1, 1, 3, dtype=torch.float32)
-            empty_mask = torch.zeros(1, 1, 1, dtype=torch.float32)
-            return (empty_image, empty_mask, False)
+            return (ExecutionBlocker(None), ExecutionBlocker(None), False)
 
         try:
             filepath = folder_paths.get_annotated_filepath(media)
             if not os.path.isfile(filepath):
                 logger.warning(f"LTXVideoLoadMedia: file not found: {filepath}")
-                empty_image = torch.zeros(1, 1, 1, 3, dtype=torch.float32)
-                empty_mask = torch.zeros(1, 1, 1, dtype=torch.float32)
-                return (empty_image, empty_mask, False)
+                return (ExecutionBlocker(None), ExecutionBlocker(None), False)
 
             image, mask = _load_frame(filepath, frame_id)
             if image is None:
-                empty_image = torch.zeros(1, 1, 1, 3, dtype=torch.float32)
-                empty_mask = torch.zeros(1, 1, 1, dtype=torch.float32)
-                return (empty_image, empty_mask, False)
+                return (ExecutionBlocker(None), ExecutionBlocker(None), False)
             return (image, mask, True)
         except Exception as e:
             logger.warning(f"LTXVideoLoadMedia: failed to load media: {e}")
-            empty_image = torch.zeros(1, 1, 1, 3, dtype=torch.float32)
-            empty_mask = torch.zeros(1, 1, 1, dtype=torch.float32)
-            return (empty_image, empty_mask, False)
+            return (ExecutionBlocker(None), ExecutionBlocker(None), False)
 
     @classmethod
     def IS_CHANGED(s, media, frame_id, bypass):
