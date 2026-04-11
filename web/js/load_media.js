@@ -22,6 +22,49 @@ const ACCEPTED_TYPES =
   ".png,.jpg,.jpeg,.gif,.webp,.apng,.bmp,.tiff,.tif," +
   ".mp4,.avi,.mov,.mkv,.webm,.flv,.wmv,.m4v";
 
+const ACCEPTED_EXTENSIONS = new Set([
+  ".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".tif", ".webp", ".gif", ".apng",
+  ".mp4", ".avi", ".mov", ".mkv", ".webm", ".flv", ".wmv", ".m4v",
+]);
+
+function isAcceptedFile(file) {
+  const ext = "." + file.name.split(".").pop().toLowerCase();
+  return ACCEPTED_EXTENSIONS.has(ext);
+}
+
+/**
+ * Upload a file and select it in the media widget.
+ */
+async function uploadAndSelect(node, file) {
+  const mediaWidget = node.widgets?.find((w) => w.name === "media");
+  if (!mediaWidget) return;
+
+  const formData = new FormData();
+  formData.append("image", file, file.name);
+  formData.append("overwrite", "true");
+
+  try {
+    const resp = await api.fetchApi("/upload/image", {
+      method: "POST",
+      body: formData,
+    });
+    const result = await resp.json();
+
+    if (result.name) {
+      if (
+        mediaWidget.options?.values &&
+        !mediaWidget.options.values.includes(result.name)
+      ) {
+        mediaWidget.options.values.push(result.name);
+      }
+      mediaWidget.value = result.name;
+      mediaWidget.callback?.(result.name);
+    }
+  } catch (e) {
+    console.error("LTXVideoLoadMedia: upload failed:", e);
+  }
+}
+
 /**
  * Fetch a preview frame from the backend and display it on the node.
  */
@@ -177,46 +220,33 @@ app.registerExtension({
 
         input.addEventListener("change", async () => {
           if (!input.files || input.files.length === 0) return;
-
-          const file = input.files[0];
-          const formData = new FormData();
-          formData.append("image", file, file.name);
-          formData.append("overwrite", "true");
-
-          try {
-            const resp = await api.fetchApi("/upload/image", {
-              method: "POST",
-              body: formData,
-            });
-            const result = await resp.json();
-
-            if (result.name) {
-              const mediaWidget = node.widgets.find(
-                (w) => w.name === "media"
-              );
-              if (mediaWidget) {
-                if (
-                  mediaWidget.options &&
-                  mediaWidget.options.values &&
-                  !mediaWidget.options.values.includes(result.name)
-                ) {
-                  mediaWidget.options.values.push(result.name);
-                }
-                mediaWidget.value = result.name;
-                mediaWidget.callback?.(result.name);
-              }
-            }
-          } catch (e) {
-            console.error("LTXVideoLoadMedia: upload failed:", e);
-            alert("Upload failed: " + e.message);
-          } finally {
-            document.body.removeChild(input);
-          }
+          await uploadAndSelect(node, input.files[0]);
+          document.body.removeChild(input);
         });
 
         input.click();
       }
     );
+
+    // Drag-and-drop support: drop a media file onto the node to upload + select
+    node.onDragOver = function (e) {
+      if (e.dataTransfer?.types?.includes("Files")) {
+        e.preventDefault();
+        return true;
+      }
+      return false;
+    };
+
+    node.onDragDrop = async function (e) {
+      const files = e.dataTransfer?.files;
+      if (!files || files.length === 0) return false;
+
+      const file = files[0];
+      if (!isAcceptedFile(file)) return false;
+
+      await uploadAndSelect(node, file);
+      return true;
+    };
 
     // Draw frame count badge on the node
     const origDrawForeground = node.onDrawForeground;
