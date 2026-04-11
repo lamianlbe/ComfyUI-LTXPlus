@@ -3,6 +3,19 @@ import { api } from "/scripts/api.js";
 
 const NODE_TYPE = "LTXVideoLoadMedia";
 
+// 1x1 transparent PNG as a data URL — used as a placeholder preview
+// so ComfyUI's ImagePreviewWidget has a valid image with naturalWidth/Height.
+const EMPTY_IMG_SRC =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+
+function clearPreview(node) {
+  const img = new Image();
+  img.src = EMPTY_IMG_SRC;
+  node.imgs = [img];
+  node.imageIndex = 0;
+  app.graph.setDirtyCanvas(true, true);
+}
+
 const ACCEPTED_TYPES =
   "image/png,image/jpeg,image/gif,image/webp,image/apng,image/bmp,image/tiff," +
   "video/mp4,video/avi,video/x-msvideo,video/quicktime,video/x-matroska,video/webm," +
@@ -21,10 +34,12 @@ async function updatePreview(node) {
 
   const filename = mediaWidget.value;
   if (!filename || filename === "none") {
+    clearPreview(node);
     return;
   }
 
   if (bypassWidget?.value === true) {
+    clearPreview(node);
     return;
   }
 
@@ -45,7 +60,7 @@ async function updatePreview(node) {
       });
     };
     img.onerror = () => {
-      // Leave existing preview as-is on error
+      clearPreview(node);
     };
     img.src = url;
   } catch (e) {
