@@ -21,13 +21,15 @@ async function updatePreview(node) {
 
   const filename = mediaWidget.value;
   if (!filename || filename === "none") {
-    node.imgs = [];
+    delete node.imgs;
+    node.imageIndex = null;
     app.graph.setDirtyCanvas(true, true);
     return;
   }
 
   if (bypassWidget?.value === true) {
-    node.imgs = [];
+    delete node.imgs;
+    node.imageIndex = null;
     app.graph.setDirtyCanvas(true, true);
     return;
   }
@@ -49,7 +51,8 @@ async function updatePreview(node) {
       });
     };
     img.onerror = () => {
-      node.imgs = [];
+      delete node.imgs;
+      node.imageIndex = null;
       app.graph.setDirtyCanvas(true, true);
     };
     img.src = url;
