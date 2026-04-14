@@ -206,12 +206,25 @@ app.registerExtension({
       }
     }
 
-    // Custom upload button that accepts images AND videos
+    // Custom upload button that accepts images AND videos.
+    // Guard with _ltx_user_click flag so that only real user clicks
+    // open the file dialog (prevents triggering during workflow load).
+    node._ltx_user_click = false;
+
+    const origOnMouseDown = node.onMouseDown;
+    node.onMouseDown = function (e, pos, canvas) {
+      node._ltx_user_click = true;
+      setTimeout(() => { node._ltx_user_click = false; }, 500);
+      return origOnMouseDown?.apply(this, arguments);
+    };
+
     node.addWidget(
       "button",
       "upload_media",
       "Choose file to upload",
       async () => {
+        if (!node._ltx_user_click) return;
+
         const input = document.createElement("input");
         input.type = "file";
         input.accept = ACCEPTED_TYPES;
@@ -219,7 +232,10 @@ app.registerExtension({
         document.body.appendChild(input);
 
         input.addEventListener("change", async () => {
-          if (!input.files || input.files.length === 0) return;
+          if (!input.files || input.files.length === 0) {
+            document.body.removeChild(input);
+            return;
+          }
           await uploadAndSelect(node, input.files[0]);
           document.body.removeChild(input);
         });
