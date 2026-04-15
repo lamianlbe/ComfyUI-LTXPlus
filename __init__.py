@@ -1,5 +1,6 @@
 from .add_elements import LTXVideoAddElements, LTXVideoTrimLatent
 from . import load_media  # noqa: F401 — registers LTXVideoLoadMedia node + API routes
+from . import load_latent  # noqa: F401 — registers LTXVideoLoadLatent node
 from .nodes_registry import NODE_CLASS_MAPPINGS as RUNTIME_NODE_CLASS_MAPPINGS
 from .nodes_registry import (
     NODE_DISPLAY_NAME_MAPPINGS as RUNTIME_NODE_DISPLAY_NAME_MAPPINGS,
