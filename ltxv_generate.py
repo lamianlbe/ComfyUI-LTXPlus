@@ -1590,14 +1590,20 @@ class LTXPlusGenerate:
         """Clear instance caches, remove dead model entries, and trigger GC."""
         self.loaded_lora = None
         gc.collect()
-        # Remove dead entries from current_loaded_models (model_patcher=None
-        # but real_model still alive). These are left behind when a clone's
+        # Remove dead entries AND entries with model_patcher=None from
+        # current_loaded_models. These are left behind when a clone's
         # outer_sample does detach() but doesn't pop from the list.
+        logger.info(f"[_free_vram] scanning {len(mm.current_loaded_models)} entries")
         for i in range(len(mm.current_loaded_models) - 1, -1, -1):
-            if mm.current_loaded_models[i].is_dead():
-                entry = mm.current_loaded_models.pop(i)
-                logger.info(f"Removed dead model entry from current_loaded_models (index {i})")
-                del entry
+            entry = mm.current_loaded_models[i]
+            is_dead = entry.is_dead()
+            model_is_none = entry.model is None
+            real = entry.real_model()
+            logger.info(f"[_free_vram] [{i}] model={entry.model is not None}, real={type(real).__name__ if real else 'None'}, is_dead={is_dead}, model_is_none={model_is_none}")
+            if is_dead or model_is_none:
+                removed = mm.current_loaded_models.pop(i)
+                logger.info(f"[_free_vram] Removed entry [{i}]")
+                del removed
         gc.collect()
 
 
