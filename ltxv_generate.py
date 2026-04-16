@@ -1351,8 +1351,20 @@ class LTXPlusGenerate:
             output_latent = {"samples": rd_samples}
             logger.info("Masked rediffusion complete")
 
-        # Free model clones to reclaim CPU RAM from offloaded weights
-        del m
+        # Break reference chains so ComfyUI model manager can reclaim VRAM.
+        # guider holds model_patcher (clone of m) and control_info with large tensors.
+        if guider is not None:
+            if hasattr(guider, 'control_info'):
+                guider.control_info = None
+            if hasattr(guider, '_control_pixels'):
+                guider._control_pixels = None
+            if hasattr(guider, '_vae'):
+                guider._vae = None
+            if hasattr(guider, '_orig_positive'):
+                guider._orig_positive = None
+            if hasattr(guider, '_orig_negative'):
+                guider._orig_negative = None
+        del m, guider
         self._free_vram()
 
         # ----------------------------------------------------------------
@@ -1543,8 +1555,13 @@ class LTXPlusGenerate:
         return noise_mask * m
 
     def _free_vram(self):
-        """Lightweight VRAM hint — let ComfyUI manage model lifecycle."""
-        pass
+        """Break reference chains so ComfyUI's model manager can reclaim VRAM.
+
+        Does NOT call unload_all_models (unsafe in multi-task environments).
+        Instead, nulls out instance-level references that would keep model
+        clones alive beyond this generation call.
+        """
+        self.loaded_lora = None
 
 
     @staticmethod
