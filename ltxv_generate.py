@@ -1059,9 +1059,6 @@ class LTXPlusGenerate:
                             negative = node_helpers.conditioning_set_values(negative, {"keyframe_idxs": None})
 
                         # Free rediffusion model to reclaim VRAM for VAE decode
-                        self._cleanup_model_refs(up_model)
-                        if hasattr(up_guider, 'model_patcher'):
-                            self._cleanup_model_refs(up_guider.model_patcher)
                         del up_model, up_guider
                         self._free_vram()
 
@@ -1218,9 +1215,6 @@ class LTXPlusGenerate:
                             positive = node_helpers.conditioning_set_values(positive, {"keyframe_idxs": None})
                             negative = node_helpers.conditioning_set_values(negative, {"keyframe_idxs": None})
 
-                        self._cleanup_model_refs(up_model)
-                        if hasattr(up_guider, 'model_patcher'):
-                            self._cleanup_model_refs(up_guider.model_patcher)
                         del up_model, up_guider
                         self._free_vram()
 
@@ -1357,22 +1351,9 @@ class LTXPlusGenerate:
             output_latent = {"samples": rd_samples}
             logger.info("Masked rediffusion complete")
 
-        # Break reference chains so ComfyUI model manager can reclaim VRAM.
-        # model.clone() sets clone.parent = original, creating a ref chain
-        # that prevents the original from being GC'd.
-        self._cleanup_model_refs(m)
-        if guider is not None:
-            if hasattr(guider, 'model_patcher'):
-                self._cleanup_model_refs(guider.model_patcher)
-            for attr in ('control_info', '_control_pixels', '_vae',
-                         '_orig_positive', '_orig_negative',
-                         'model_patcher', 'inner_model', 'conds', 'loaded_models'):
-                if hasattr(guider, attr):
-                    try:
-                        setattr(guider, attr, None)
-                    except Exception:
-                        pass
-        del m, guider
+        # Clean up the local model clone (m) to help GC.
+        # Do NOT modify the external guider object — it may be reused across runs.
+        del m
         self._free_vram()
 
         # ----------------------------------------------------------------
@@ -1561,22 +1542,6 @@ class LTXPlusGenerate:
         m = m.unsqueeze(2).to(device=noise_mask.device, dtype=noise_mask.dtype)
 
         return noise_mask * m
-
-    @staticmethod
-    def _cleanup_model_refs(model_patcher):
-        """Break the parent chain on a ModelPatcher clone.
-
-        model.clone() sets clone.parent = original, creating a reference
-        chain that prevents ComfyUI's model manager from reclaiming the
-        original model. Nulling parent breaks this chain.
-        """
-        if model_patcher is None:
-            return
-        try:
-            if hasattr(model_patcher, 'parent'):
-                model_patcher.parent = None
-        except Exception:
-            pass
 
     def _free_vram(self):
         """Break reference chains so ComfyUI's model manager can reclaim VRAM.
