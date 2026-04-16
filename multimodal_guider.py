@@ -1030,7 +1030,11 @@ class ICLoRAGuider(MultimodalGuider):
 
     def sample(self, noise, latent_image, sampler, sigmas, **kwargs):
         # 1. Apply model sampling shift (deferred until latent dims known)
-        self._apply_model_sampling(latent_image)
+        # Skip if rediffusion — generate node already set the correct shift
+        if not getattr(self, '_is_rediffusion_pass', False):
+            self._apply_model_sampling(latent_image)
+        else:
+            logger.info("Rediffusion: skipping _apply_model_sampling (shift already set by generate)")
 
         # Distilled mode: when cfg=1.0, use official sigma schedule
         # BUT only for the initial pass — rediffusion passes use the sigmas

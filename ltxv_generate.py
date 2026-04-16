@@ -584,6 +584,11 @@ class LTXPlusGenerate:
         output_latent = latent_dict.copy()
         output_latent["samples"] = samples
 
+        # Cache CRF-preprocessed control pixels for rediffusion (avoid re-processing)
+        _iclora_info_cache = getattr(guider, 'control_info', None)
+        if _iclora_info_cache is not None and hasattr(guider, '_control_pixels'):
+            _iclora_info_cache["_preprocessed_control_image"] = guider._control_pixels
+
         # ----------------------------------------------------------------
         # 6. POST-SAMPLE: separate AV, then crop appended guide frames
         # ----------------------------------------------------------------
@@ -899,11 +904,13 @@ class LTXPlusGenerate:
                             # Temporal-only upscale: control image frames need doubling
                             up_iclora_info = _iclora_info
                             if do_temporal_upscale and not do_spatial_upscale:
-                                ctrl_img = _iclora_info.get("control_image")
-                                if ctrl_img is not None and ctrl_img.shape[0] > 1:
-                                    doubled = ctrl_img.repeat_interleave(2, dim=0)
-                                    up_iclora_info = {**_iclora_info, "control_image": doubled}
-                                    logger.info(f"Temporal-only: doubled control image frames {ctrl_img.shape[0]} -> {doubled.shape[0]}")
+                                # Double the preprocessed image (not raw) to avoid re-CRF
+                                preproc = _iclora_info.get("_preprocessed_control_image", None)
+                                src_img = preproc if preproc is not None else _iclora_info.get("control_image")
+                                if src_img is not None and src_img.shape[0] > 1:
+                                    doubled = src_img.repeat_interleave(2, dim=0)
+                                    up_iclora_info = {**_iclora_info, "_preprocessed_control_image": doubled}
+                                    logger.info(f"Temporal-only: doubled control image frames {src_img.shape[0]} -> {doubled.shape[0]}")
 
                             up_guider = self._rebuild_iclora_guider(
                                 m, positive, negative, vae,
@@ -1440,14 +1447,17 @@ class LTXPlusGenerate:
         # IC-LoRA and attention overrides are already applied to up_model (m).
         # No need to re-apply — just reuse as-is.
 
-        # CRF preprocess control image
-        control_image = ci["control_image"]
-        crf = ci.get("crf", 35)
-        if crf > 0:
-            processed_frames = []
-            for i in range(control_image.shape[0]):
-                processed_frames.append(ltxv_preprocess(control_image[i], crf))
-            control_image = torch.stack(processed_frames)
+        # Use pre-CRF-processed control image if available (from initial guider),
+        # otherwise fall back to processing from raw.
+        control_image = ci.get("_preprocessed_control_image", None)
+        if control_image is None:
+            control_image = ci["control_image"]
+            crf = ci.get("crf", 35)
+            if crf > 0:
+                processed_frames = []
+                for i in range(control_image.shape[0]):
+                    processed_frames.append(ltxv_preprocess(control_image[i], crf))
+                control_image = torch.stack(processed_frames)
 
         # Stamp frame rate
         fr = ci.get("frame_rate", 25.0)
