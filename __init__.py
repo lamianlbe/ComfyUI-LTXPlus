@@ -2,6 +2,7 @@ from .add_elements import LTXVideoAddElements, LTXVideoTrimLatent
 from . import load_media  # noqa: F401 — registers LTXVideoLoadMedia node + API routes
 from . import load_latent  # noqa: F401 — registers LTXVideoLoadLatent node
 from . import save_latent  # noqa: F401 — registers LTXVideoSaveLatent node
+from . import ltxv_generate  # noqa
 from .nodes_registry import NODE_CLASS_MAPPINGS as RUNTIME_NODE_CLASS_MAPPINGS
 from .nodes_registry import (
     NODE_DISPLAY_NAME_MAPPINGS as RUNTIME_NODE_DISPLAY_NAME_MAPPINGS,
@@ -21,6 +22,10 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 # Update with runtime mappings
 NODE_CLASS_MAPPINGS.update(RUNTIME_NODE_CLASS_MAPPINGS)
 NODE_DISPLAY_NAME_MAPPINGS.update(RUNTIME_NODE_DISPLAY_NAME_MAPPINGS)
+
+# LTX Plus Generate node
+NODE_CLASS_MAPPINGS.update(ltxv_generate.NODE_CLASS_MAPPINGS)
+NODE_DISPLAY_NAME_MAPPINGS.update(ltxv_generate.NODE_DISPLAY_NAME_MAPPINGS)
 
 WEB_DIRECTORY = "./web"
 
