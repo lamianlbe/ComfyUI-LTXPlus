@@ -256,7 +256,13 @@ class LTXPlusGenerate:
         # 1. SETUP
         # ----------------------------------------------------------------
 
-        m = model.clone()
+        # When an external guider is connected (e.g. IC-LoRA), use its
+        # model_patcher which is already loaded on GPU. This avoids a
+        # redundant model load during rediffusion.
+        if guider is not None and hasattr(guider, 'model_patcher') and guider.model_patcher is not None:
+            m = guider.model_patcher
+        else:
+            m = model.clone()
 
         # Attention override
         attn_func = None
