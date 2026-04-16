@@ -887,13 +887,25 @@ class LTXPlusGenerate:
                         _iclora_info = getattr(guider, 'control_info', None)
                         if _iclora_info and _iclora_info.get("control_image") is not None:
                             _, _, up_lt, up_lh, up_lw = upsampled.shape
+
+                            # Temporal-only upscale: control image frames need doubling
+                            up_iclora_info = _iclora_info
+                            if do_temporal_upscale and not do_spatial_upscale:
+                                ctrl_img = _iclora_info.get("control_image")
+                                if ctrl_img is not None and ctrl_img.shape[0] > 1:
+                                    # Duplicate each frame to match 2x temporal
+                                    doubled = ctrl_img.repeat_interleave(2, dim=0)
+                                    up_iclora_info = {**_iclora_info, "control_image": doubled}
+                                    logger.info(f"Temporal-only: doubled control image frames {ctrl_img.shape[0]} -> {doubled.shape[0]}")
+
                             up_guider = self._rebuild_iclora_guider(
                                 up_model, positive, negative, vae,
-                                _iclora_info, upscale_cfg,
+                                up_iclora_info, upscale_cfg,
                                 latent_h=up_lh, latent_w=up_lw, latent_t=up_lt,
                             )
                             up_guider._current_rediff_pass = _rediff_i
                             up_guider._total_rediff_passes = _rediff_passes
+                            up_guider._is_rediffusion_pass = True
                         else:
                             up_guider = comfy.samplers.CFGGuider(up_model)
                             up_guider.set_conds(positive, negative)

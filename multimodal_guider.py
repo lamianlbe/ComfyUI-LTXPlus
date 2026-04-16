@@ -1033,18 +1033,17 @@ class ICLoRAGuider(MultimodalGuider):
         self._apply_model_sampling(latent_image)
 
         # Distilled mode: when cfg=1.0, use official sigma schedule
-        if self.video_cfg == 1.0:
+        # BUT only for the initial pass — rediffusion passes use the sigmas
+        # provided by the generate node (upscale_steps + upscale_denoise)
+        is_rediff = getattr(self, '_is_rediffusion_pass', False)
+        if self.video_cfg == 1.0 and not is_rediff:
             base_sigmas = torch.tensor(self.DISTILLED_SIGMAS, dtype=torch.float32)
             # On subsequent passes, trim early (high-noise) sigmas so we refine
             # without destroying what previous passes built
             rediff_pass = getattr(self, '_current_rediff_pass', 0)
             total_passes = getattr(self, '_total_rediff_passes', 1)
             if rediff_pass > 0 and total_passes > 1:
-                # Each subsequent pass starts from a lower noise level
-                # Pass 0: full schedule (8 steps)
-                # Pass 1: skip first 2 sigmas (start from 0.9875)
-                # Pass 2: skip first 4 sigmas (start from 0.975)
-                skip = min(rediff_pass * 2, len(base_sigmas) - 3)  # keep at least 2 steps
+                skip = min(rediff_pass * 2, len(base_sigmas) - 3)
                 sigmas = base_sigmas[skip:]
                 logger.info(f"Re-diffusion pass {rediff_pass + 1}/{total_passes}: trimmed to {len(sigmas)-1} steps, start_sigma={sigmas[0]:.4f}")
             else:
@@ -1058,6 +1057,8 @@ class ICLoRAGuider(MultimodalGuider):
             else:
                 sampler = comfy.samplers.sampler_object("euler")
                 logger.info(f"Distilled mode: sampler=euler, official sigma schedule ({len(sigmas)-1} steps)")
+        elif is_rediff:
+            logger.info(f"Rediffusion pass: using provided sigmas ({len(sigmas)-1} steps), not overriding")
 
         # 2. Encode guide + inject into latent and conditioning
         denoise_mask = kwargs.get("denoise_mask", None)
