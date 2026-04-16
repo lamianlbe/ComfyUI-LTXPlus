@@ -1587,8 +1587,17 @@ class LTXPlusGenerate:
             logger.warning(f"Failed to unload model clone: {e}")
 
     def _free_vram(self):
-        """Clear instance caches and trigger GC."""
+        """Clear instance caches, remove dead model entries, and trigger GC."""
         self.loaded_lora = None
+        gc.collect()
+        # Remove dead entries from current_loaded_models (model_patcher=None
+        # but real_model still alive). These are left behind when a clone's
+        # outer_sample does detach() but doesn't pop from the list.
+        for i in range(len(mm.current_loaded_models) - 1, -1, -1):
+            if mm.current_loaded_models[i].is_dead():
+                entry = mm.current_loaded_models.pop(i)
+                logger.info(f"Removed dead model entry from current_loaded_models (index {i})")
+                del entry
         gc.collect()
 
 
