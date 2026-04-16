@@ -819,18 +819,20 @@ class LTXPlusGenerate:
                         else:
                             up_combined = upsampled
 
-                        # Apply upscale LoRA to a fresh clone
-                        up_model = m.clone()
-                        if upscale_lora and upscale_lora != "none" and upscale_lora_strength != 0:
-                            lora_path = folder_paths.get_full_path_or_raise("loras", upscale_lora)
-                            lora = None
-                            if self.loaded_lora is not None and self.loaded_lora[0] == lora_path:
-                                lora = self.loaded_lora[1]
-                            if lora is None:
-                                lora = comfy.utils.load_torch_file(lora_path, safe_load=True)
-                                self.loaded_lora = (lora_path, lora)
-                            up_model, _ = comfy.sd.load_lora_for_models(up_model, None, lora, upscale_lora_strength, 0)
-                            logger.info(f"Applied upscale LoRA: {upscale_lora} (strength={upscale_lora_strength})")
+                        # Reuse m for rediffusion — only update model_sampling shift.
+                        # Apply upscale LoRA once (tracked to avoid double-apply).
+                        if not getattr(self, '_upscale_lora_applied', False):
+                            if upscale_lora and upscale_lora != "none" and upscale_lora_strength != 0:
+                                lora_path = folder_paths.get_full_path_or_raise("loras", upscale_lora)
+                                lora = None
+                                if self.loaded_lora is not None and self.loaded_lora[0] == lora_path:
+                                    lora = self.loaded_lora[1]
+                                if lora is None:
+                                    lora = comfy.utils.load_torch_file(lora_path, safe_load=True)
+                                    self.loaded_lora = (lora_path, lora)
+                                m, _ = comfy.sd.load_lora_for_models(m, None, lora, upscale_lora_strength, 0)
+                                logger.info(f"Applied upscale LoRA: {upscale_lora} (strength={upscale_lora_strength})")
+                                self._upscale_lora_applied = True
 
                         if has_any_guides:
                             # I2V: compute shift from upscaled latent tokens
@@ -838,9 +840,9 @@ class LTXPlusGenerate:
                             up_shift = up_tokens * mm_shift + b
                             logger.info(f"Upscale shift: tokens={up_tokens}, shift={up_shift:.3f}")
 
-                            up_model_sampling = ModelSamplingAdvanced(up_model.model.model_config)
+                            up_model_sampling = ModelSamplingAdvanced(m.model.model_config)
                             up_model_sampling.set_parameters(shift=up_shift)
-                            up_model.add_object_patch("model_sampling", up_model_sampling)
+                            m.add_object_patch("model_sampling", up_model_sampling)
 
                             # Build sigma schedule with numerically stable computation.
                             exp_shift = math.exp(up_shift)
@@ -863,9 +865,9 @@ class LTXPlusGenerate:
                             up_shift = up_tokens * mm_shift + b
                             logger.info(f"T2V upscale: tokens={up_tokens}, shift={up_shift:.3f}")
 
-                            up_model_sampling = ModelSamplingAdvanced(up_model.model.model_config)
+                            up_model_sampling = ModelSamplingAdvanced(m.model.model_config)
                             up_model_sampling.set_parameters(shift=up_shift)
-                            up_model.add_object_patch("model_sampling", up_model_sampling)
+                            m.add_object_patch("model_sampling", up_model_sampling)
 
                             exp_shift = math.exp(up_shift)
                             t = torch.linspace(1.0, 0.0, upscale_steps + 1, dtype=torch.float64)
@@ -893,13 +895,12 @@ class LTXPlusGenerate:
                             if do_temporal_upscale and not do_spatial_upscale:
                                 ctrl_img = _iclora_info.get("control_image")
                                 if ctrl_img is not None and ctrl_img.shape[0] > 1:
-                                    # Duplicate each frame to match 2x temporal
                                     doubled = ctrl_img.repeat_interleave(2, dim=0)
                                     up_iclora_info = {**_iclora_info, "control_image": doubled}
                                     logger.info(f"Temporal-only: doubled control image frames {ctrl_img.shape[0]} -> {doubled.shape[0]}")
 
                             up_guider = self._rebuild_iclora_guider(
-                                up_model, positive, negative, vae,
+                                m, positive, negative, vae,
                                 up_iclora_info, upscale_cfg,
                                 latent_h=up_lh, latent_w=up_lw, latent_t=up_lt,
                             )
@@ -907,11 +908,11 @@ class LTXPlusGenerate:
                             up_guider._total_rediff_passes = _rediff_passes
                             up_guider._is_rediffusion_pass = True
                         else:
-                            up_guider = comfy.samplers.CFGGuider(up_model)
+                            up_guider = comfy.samplers.CFGGuider(m)
                             up_guider.set_conds(positive, negative)
                             up_guider.set_cfg(upscale_cfg)
 
-                        up_latent_image = comfy.sample.fix_empty_latent_channels(up_guider.model_patcher, up_combined)
+                        up_latent_image = comfy.sample.fix_empty_latent_channels(m, up_combined)
                         up_noise = comfy.sample.prepare_noise(up_latent_image, seed + 1)
                         up_sampler = getattr(guider, 'ic_lora_sampler', None) or comfy.samplers.sampler_object("euler_ancestral")
 
@@ -1058,9 +1059,7 @@ class LTXPlusGenerate:
                             positive = node_helpers.conditioning_set_values(positive, {"keyframe_idxs": None})
                             negative = node_helpers.conditioning_set_values(negative, {"keyframe_idxs": None})
 
-                        # Free rediffusion model to reclaim VRAM for VAE decode
-                        self._unload_model_clone(up_model)
-                        del up_model, up_guider
+                        del up_guider
                         self._free_vram()
 
                 # IC-LoRA pass 3: normal spatial upscale + re-diffusion
@@ -1151,25 +1150,15 @@ class LTXPlusGenerate:
                     if do_rediffusion:
                         logger.info(f"Pass 3 re-diffusion ({upscale_steps} steps, cfg={upscale_cfg})")
                         up_combined = upsampled
-                        up_model = m.clone()
-                        if upscale_lora and upscale_lora != "none" and upscale_lora_strength != 0:
-                            lora_path = folder_paths.get_full_path_or_raise("loras", upscale_lora)
-                            lora = None
-                            if self.loaded_lora is not None and self.loaded_lora[0] == lora_path:
-                                lora = self.loaded_lora[1]
-                            if lora is None:
-                                lora = comfy.utils.load_torch_file(lora_path, safe_load=True)
-                                self.loaded_lora = (lora_path, lora)
-                            up_model, _ = comfy.sd.load_lora_for_models(up_model, None, lora, upscale_lora_strength, 0)
-                            logger.info(f"Applied upscale LoRA: {upscale_lora} (strength={upscale_lora_strength})")
 
+                        # Reuse m — upscale LoRA already applied if needed
                         up_tokens = min(math.prod(upsampled.shape[2:]), x2 * 2)
                         up_shift = up_tokens * mm_shift + b
                         logger.info(f"Pass 3 shift: tokens={up_tokens}, shift={up_shift:.3f}")
 
-                        up_model_sampling = ModelSamplingAdvanced(up_model.model.model_config)
+                        up_model_sampling = ModelSamplingAdvanced(m.model.model_config)
                         up_model_sampling.set_parameters(shift=up_shift)
-                        up_model.add_object_patch("model_sampling", up_model_sampling)
+                        m.add_object_patch("model_sampling", up_model_sampling)
 
                         exp_shift = math.exp(up_shift)
                         t = torch.linspace(1.0, 0.0, upscale_steps + 1, dtype=torch.float64)
@@ -1186,11 +1175,11 @@ class LTXPlusGenerate:
                         logger.info(f"Pass 3 sigmas ({len(up_sig)}): {up_sig.tolist()}")
 
                         # Standard CFGGuider -- no IC-LoRA, no distilled
-                        up_guider = comfy.samplers.CFGGuider(up_model)
+                        up_guider = comfy.samplers.CFGGuider(m)
                         up_guider.set_conds(positive, negative)
                         up_guider.set_cfg(upscale_cfg)
 
-                        up_latent_image = comfy.sample.fix_empty_latent_channels(up_guider.model_patcher, up_combined)
+                        up_latent_image = comfy.sample.fix_empty_latent_channels(m, up_combined)
                         up_noise = comfy.sample.prepare_noise(up_latent_image, seed + 1)
                         up_sampler = sampler if sampler is not None else comfy.samplers.sampler_object("euler_ancestral")
 
@@ -1216,8 +1205,7 @@ class LTXPlusGenerate:
                             positive = node_helpers.conditioning_set_values(positive, {"keyframe_idxs": None})
                             negative = node_helpers.conditioning_set_values(negative, {"keyframe_idxs": None})
 
-                        self._unload_model_clone(up_model)
-                        del up_model, up_guider
+                        del up_guider
                         self._free_vram()
 
                 if upscale_fallback:
@@ -1353,28 +1341,10 @@ class LTXPlusGenerate:
             output_latent = {"samples": rd_samples}
             logger.info("Masked rediffusion complete")
 
-        # Remove model clone from ComfyUI's loaded models list, then delete.
-        # Do NOT modify the external guider object — it may be reused across runs.
-        self._unload_model_clone(m)
+        # Clean up: m is the only clone, delete it and let GC collect.
         del m
+        self._upscale_lora_applied = False
         self._free_vram()
-
-        # Debug: check what's still in current_loaded_models
-        logger.info(f"[LEAK DEBUG] current_loaded_models has {len(mm.current_loaded_models)} entries after cleanup:")
-        model_obj = model.model
-        for i, entry in enumerate(mm.current_loaded_models):
-            entry_model = entry.model
-            entry_real = entry.real_model()
-            is_clone_of_ours = entry_real is model_obj if entry_real is not None else False
-            has_parent = hasattr(entry_model, 'parent') and entry_model.parent is not None if entry_model is not None else False
-            parent_is_model = entry_model.parent is model if (has_parent and entry_model is not None) else False
-            logger.info(f"  [{i}] model_patcher={type(entry_model).__name__ if entry_model else 'None'} "
-                        f"id={id(entry_model) if entry_model else 0}, "
-                        f"real_model={type(entry_real).__name__ if entry_real else 'None'}, "
-                        f"is_our_model={is_clone_of_ours}, "
-                        f"has_parent={has_parent}, "
-                        f"parent_is_input_model={parent_is_model}, "
-                        f"is_dead={entry.is_dead()}")
 
         # ----------------------------------------------------------------
         # 8. DECODE (optional)
@@ -1461,30 +1431,8 @@ class LTXPlusGenerate:
         from comfy_extras.nodes_lt import preprocess as ltxv_preprocess
 
         ci = control_info
-        lora_path = folder_paths.get_full_path_or_raise("loras", ci["lora_name"])
-        lora = comfy.utils.load_torch_file(lora_path, safe_load=True)
-        if ci["lora_strength"] != 0:
-            up_model, _ = comfy.sd.load_lora_for_models(
-                up_model, None, lora, ci["lora_strength"], 0
-            )
-            logger.info(f"IC-LoRA re-applied: {ci['lora_name']} (strength={ci['lora_strength']})")
-        del lora
-
-        # Attention override
-        attn_func = None
-        attn_mode = ci.get("attention_mode", "auto")
-        if attn_mode != "default":
-            if attn_mode == "sage":
-                from comfy.ldm.modules.attention import attention_sage
-                attn_func = attention_sage
-            elif attn_mode == "auto":
-                from comfy.ldm.modules.attention import SAGE_ATTENTION_IS_AVAILABLE, attention_sage
-                if SAGE_ATTENTION_IS_AVAILABLE:
-                    attn_func = attention_sage
-        if attn_func is not None:
-            up_model.model_options.setdefault("transformer_options", {})["optimized_attention_override"] = (
-                lambda func, *args, **kwargs: attn_func(*args, **kwargs)
-            )
+        # IC-LoRA and attention overrides are already applied to up_model (m).
+        # No need to re-apply — just reuse as-is.
 
         # CRF preprocess control image
         control_image = ci["control_image"]
@@ -1563,47 +1511,15 @@ class LTXPlusGenerate:
 
         return noise_mask * m
 
-    @staticmethod
-    def _unload_model_clone(model_patcher):
-        """Remove a model patcher clone from ComfyUI's current_loaded_models.
-
-        When a clone is loaded via prepare_sampling → load_models_gpu, it gets
-        added to current_loaded_models. Simply del'ing the Python reference
-        doesn't remove it from that list, causing 'memory leak' warnings on
-        the next run. This method properly detaches and removes the clone.
-        """
-        if model_patcher is None:
-            return
-        try:
-            for i in range(len(mm.current_loaded_models) - 1, -1, -1):
-                if mm.current_loaded_models[i].model is model_patcher:
-                    entry = mm.current_loaded_models.pop(i)
-                    entry.model.detach(unpatch_all=True)
-                    if hasattr(entry, 'model_finalizer'):
-                        entry.model_finalizer.detach()
-                    logger.info(f"Unloaded model clone from current_loaded_models (index {i})")
-                    break
-        except Exception as e:
-            logger.warning(f"Failed to unload model clone: {e}")
-
     def _free_vram(self):
         """Clear instance caches, remove dead model entries, and trigger GC."""
         self.loaded_lora = None
         gc.collect()
-        # Remove dead entries AND entries with model_patcher=None from
-        # current_loaded_models. These are left behind when a clone's
-        # outer_sample does detach() but doesn't pop from the list.
-        logger.info(f"[_free_vram] scanning {len(mm.current_loaded_models)} entries")
+        # Remove dead/orphaned entries from current_loaded_models.
         for i in range(len(mm.current_loaded_models) - 1, -1, -1):
             entry = mm.current_loaded_models[i]
-            is_dead = entry.is_dead()
-            model_is_none = entry.model is None
-            real = entry.real_model()
-            logger.info(f"[_free_vram] [{i}] model={entry.model is not None}, real={type(real).__name__ if real else 'None'}, is_dead={is_dead}, model_is_none={model_is_none}")
-            if is_dead or model_is_none:
-                removed = mm.current_loaded_models.pop(i)
-                logger.info(f"[_free_vram] Removed entry [{i}]")
-                del removed
+            if entry.is_dead() or entry.model is None:
+                mm.current_loaded_models.pop(i)
         gc.collect()
 
 
