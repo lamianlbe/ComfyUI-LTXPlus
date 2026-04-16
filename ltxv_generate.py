@@ -1359,6 +1359,22 @@ class LTXPlusGenerate:
         del m
         self._free_vram()
 
+        # Debug: check what's still in current_loaded_models
+        logger.info(f"[LEAK DEBUG] current_loaded_models has {len(mm.current_loaded_models)} entries after cleanup:")
+        model_obj = model.model
+        for i, entry in enumerate(mm.current_loaded_models):
+            entry_model = entry.model
+            entry_real = entry.real_model()
+            is_clone_of_ours = entry_real is model_obj if entry_real is not None else False
+            has_parent = hasattr(entry_model, 'parent') and entry_model.parent is not None if entry_model is not None else False
+            parent_is_model = entry_model.parent is model if (has_parent and entry_model is not None) else False
+            logger.info(f"  [{i}] model_patcher={type(entry_model).__name__ if entry_model else 'None'} "
+                        f"id={id(entry_model) if entry_model else 0}, "
+                        f"real_model={type(entry_real).__name__ if entry_real else 'None'}, "
+                        f"is_our_model={is_clone_of_ours}, "
+                        f"has_parent={has_parent}, "
+                        f"parent_is_input_model={parent_is_model}, "
+                        f"is_dead={entry.is_dead()}")
 
         # ----------------------------------------------------------------
         # 8. DECODE (optional)
