@@ -3,6 +3,7 @@ from . import load_media  # noqa: F401 — registers LTXVideoLoadMedia node + AP
 from . import load_latent  # noqa: F401 — registers LTXVideoLoadLatent node
 from . import save_latent  # noqa: F401 — registers LTXVideoSaveLatent node
 from . import ltxv_generate  # noqa
+from . import ltxv_iclora_guider  # noqa
 from .nodes_registry import NODE_CLASS_MAPPINGS as RUNTIME_NODE_CLASS_MAPPINGS
 from .nodes_registry import (
     NODE_DISPLAY_NAME_MAPPINGS as RUNTIME_NODE_DISPLAY_NAME_MAPPINGS,
@@ -23,9 +24,11 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 NODE_CLASS_MAPPINGS.update(RUNTIME_NODE_CLASS_MAPPINGS)
 NODE_DISPLAY_NAME_MAPPINGS.update(RUNTIME_NODE_DISPLAY_NAME_MAPPINGS)
 
-# LTX Plus Generate node
+# LTX Plus Generate + IC-LoRA Guider nodes
 NODE_CLASS_MAPPINGS.update(ltxv_generate.NODE_CLASS_MAPPINGS)
 NODE_DISPLAY_NAME_MAPPINGS.update(ltxv_generate.NODE_DISPLAY_NAME_MAPPINGS)
+NODE_CLASS_MAPPINGS.update(ltxv_iclora_guider.NODE_CLASS_MAPPINGS)
+NODE_DISPLAY_NAME_MAPPINGS.update(ltxv_iclora_guider.NODE_DISPLAY_NAME_MAPPINGS)
 
 WEB_DIRECTORY = "./web"
 
