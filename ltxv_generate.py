@@ -1058,11 +1058,6 @@ class LTXPlusGenerate:
 
                     # --- Spatial upscale ---
                     logger.info("IC-LoRA pass 3: spatial 2x upscale + normal re-diffusion")
-                    # Aggressive VRAM cleanup -- unload diffusion model from pass 2
-                    mm.unload_all_models()
-                    gc.collect()
-                    torch.cuda.empty_cache()
-                    mm.soft_empty_cache()
 
                     model_dtype = next(upscale_model.parameters()).dtype
                     up_latents = output_latent["samples"]
@@ -1142,12 +1137,6 @@ class LTXPlusGenerate:
                     do_rediffusion = p3_has_image_guides and upscale_denoise > 0 and upscale_steps > 0
                     if do_rediffusion:
                         logger.info(f"Pass 3 re-diffusion ({upscale_steps} steps, cfg={upscale_cfg})")
-                        # Free spatial upscale model VRAM before loading diffusion model
-                        mm.unload_all_models()
-                        gc.collect()
-                        torch.cuda.empty_cache()
-                        mm.soft_empty_cache()
-
                         up_combined = upsampled
                         up_model = m.clone()
                         if upscale_lora and upscale_lora != "none" and upscale_lora_strength != 0:
@@ -1542,11 +1531,8 @@ class LTXPlusGenerate:
         return noise_mask * m
 
     def _free_vram(self):
-        """Unload models and flush all VRAM/RAM caches."""
-        mm.unload_all_models()
-        gc.collect()
-        torch.cuda.empty_cache()
-        mm.soft_empty_cache()
+        """Lightweight VRAM hint — let ComfyUI manage model lifecycle."""
+        pass
 
 
     @staticmethod
