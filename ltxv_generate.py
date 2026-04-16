@@ -1059,6 +1059,7 @@ class LTXPlusGenerate:
                             negative = node_helpers.conditioning_set_values(negative, {"keyframe_idxs": None})
 
                         # Free rediffusion model to reclaim VRAM for VAE decode
+                        self._unload_model_clone(up_model)
                         del up_model, up_guider
                         self._free_vram()
 
@@ -1215,6 +1216,7 @@ class LTXPlusGenerate:
                             positive = node_helpers.conditioning_set_values(positive, {"keyframe_idxs": None})
                             negative = node_helpers.conditioning_set_values(negative, {"keyframe_idxs": None})
 
+                        self._unload_model_clone(up_model)
                         del up_model, up_guider
                         self._free_vram()
 
@@ -1351,40 +1353,12 @@ class LTXPlusGenerate:
             output_latent = {"samples": rd_samples}
             logger.info("Masked rediffusion complete")
 
-        # Clean up the local model clone (m) to help GC.
+        # Remove model clone from ComfyUI's loaded models list, then delete.
         # Do NOT modify the external guider object — it may be reused across runs.
+        self._unload_model_clone(m)
         del m
         self._free_vram()
 
-        # Debug: trace what's holding references to the original model
-        import sys
-        model_obj = model.model  # the underlying torch model
-        gc.collect()
-        referrers = gc.get_referrers(model_obj)
-        logger.info(f"[LEAK DEBUG] model.model has {len(referrers)} referrers after cleanup:")
-        for i, ref in enumerate(referrers):
-            ref_type = type(ref).__name__
-            if ref_type == 'dict':
-                # Show dict keys that point to our model
-                keys = [k for k, v in ref.items() if v is model_obj]
-                logger.info(f"  [{i}] dict (keys pointing to model: {keys}, id={id(ref)})")
-                # Try to find who owns this dict
-                dict_owners = gc.get_referrers(ref)
-                for owner in dict_owners[:3]:
-                    owner_type = type(owner).__name__
-                    if owner_type != 'frame':
-                        logger.info(f"       owned by: {owner_type} (id={id(owner)})")
-            elif ref_type == 'frame':
-                continue  # skip stack frames
-            elif ref_type == 'list':
-                logger.info(f"  [{i}] list (len={len(ref)}, id={id(ref)})")
-            else:
-                ref_info = f"{ref_type}"
-                if hasattr(ref, '__name__'):
-                    ref_info += f" name={ref.__name__}"
-                if hasattr(ref, '__class__'):
-                    ref_info += f" class={ref.__class__.__name__}"
-                logger.info(f"  [{i}] {ref_info} (id={id(ref)})")
 
         # ----------------------------------------------------------------
         # 8. DECODE (optional)
@@ -1573,13 +1547,31 @@ class LTXPlusGenerate:
 
         return noise_mask * m
 
-    def _free_vram(self):
-        """Trigger Python GC to collect model clones before ComfyUI checks.
+    @staticmethod
+    def _unload_model_clone(model_patcher):
+        """Remove a model patcher clone from ComfyUI's current_loaded_models.
 
-        Does NOT call unload_all_models (unsafe in multi-task environments).
-        Only runs gc.collect() to ensure model patcher clones (which have
-        .parent references) are freed promptly.
+        When a clone is loaded via prepare_sampling → load_models_gpu, it gets
+        added to current_loaded_models. Simply del'ing the Python reference
+        doesn't remove it from that list, causing 'memory leak' warnings on
+        the next run. This method properly detaches and removes the clone.
         """
+        if model_patcher is None:
+            return
+        try:
+            for i in range(len(mm.current_loaded_models) - 1, -1, -1):
+                if mm.current_loaded_models[i].model is model_patcher:
+                    entry = mm.current_loaded_models.pop(i)
+                    entry.model.detach(unpatch_all=True)
+                    if hasattr(entry, 'model_finalizer'):
+                        entry.model_finalizer.detach()
+                    logger.info(f"Unloaded model clone from current_loaded_models (index {i})")
+                    break
+        except Exception as e:
+            logger.warning(f"Failed to unload model clone: {e}")
+
+    def _free_vram(self):
+        """Clear instance caches and trigger GC."""
         self.loaded_lora = None
         gc.collect()
 
