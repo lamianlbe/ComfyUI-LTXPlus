@@ -1356,6 +1356,36 @@ class LTXPlusGenerate:
         del m
         self._free_vram()
 
+        # Debug: trace what's holding references to the original model
+        import sys
+        model_obj = model.model  # the underlying torch model
+        gc.collect()
+        referrers = gc.get_referrers(model_obj)
+        logger.info(f"[LEAK DEBUG] model.model has {len(referrers)} referrers after cleanup:")
+        for i, ref in enumerate(referrers):
+            ref_type = type(ref).__name__
+            if ref_type == 'dict':
+                # Show dict keys that point to our model
+                keys = [k for k, v in ref.items() if v is model_obj]
+                logger.info(f"  [{i}] dict (keys pointing to model: {keys}, id={id(ref)})")
+                # Try to find who owns this dict
+                dict_owners = gc.get_referrers(ref)
+                for owner in dict_owners[:3]:
+                    owner_type = type(owner).__name__
+                    if owner_type != 'frame':
+                        logger.info(f"       owned by: {owner_type} (id={id(owner)})")
+            elif ref_type == 'frame':
+                continue  # skip stack frames
+            elif ref_type == 'list':
+                logger.info(f"  [{i}] list (len={len(ref)}, id={id(ref)})")
+            else:
+                ref_info = f"{ref_type}"
+                if hasattr(ref, '__name__'):
+                    ref_info += f" name={ref.__name__}"
+                if hasattr(ref, '__class__'):
+                    ref_info += f" class={ref.__class__.__name__}"
+                logger.info(f"  [{i}] {ref_info} (id={id(ref)})")
+
         # ----------------------------------------------------------------
         # 8. DECODE (optional)
         # ----------------------------------------------------------------
