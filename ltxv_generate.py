@@ -1544,13 +1544,14 @@ class LTXPlusGenerate:
         return noise_mask * m
 
     def _free_vram(self):
-        """Break reference chains so ComfyUI's model manager can reclaim VRAM.
+        """Trigger Python GC to collect model clones before ComfyUI checks.
 
         Does NOT call unload_all_models (unsafe in multi-task environments).
-        Instead, nulls out instance-level references that would keep model
-        clones alive beyond this generation call.
+        Only runs gc.collect() to ensure model patcher clones (which have
+        .parent references) are freed promptly.
         """
         self.loaded_lora = None
+        gc.collect()
 
 
     @staticmethod
