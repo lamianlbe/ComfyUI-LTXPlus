@@ -796,10 +796,11 @@ class LTXPlusGenerate:
                         output_latent = {"samples": upsampled}
 
                     # Re-diffusion at upscaled resolution
-                    up_has_image_guides = key_frames is not None and key_frame_poses and guide_type == "guide"
-                    do_rediffusion = up_has_image_guides and upscale_denoise > 0 and upscale_steps > 0
-                    if up_has_image_guides:
-                        rediffusion_label = f"{upscale_steps} steps, cfg={upscale_cfg}"
+                    has_any_guides = key_frames is not None and key_frame_poses
+                    up_has_guide_mode = has_any_guides and guide_type == "guide"
+                    do_rediffusion = upscale_denoise > 0 and upscale_steps > 0
+                    if has_any_guides:
+                        rediffusion_label = f"{upscale_steps} steps, denoise={upscale_denoise}, cfg={upscale_cfg}"
                     else:
                         rediffusion_label = f"3 steps (manual sigmas), cfg={upscale_cfg}"
                         do_rediffusion = True  # T2V always re-diffuses with manual sigmas
@@ -831,7 +832,7 @@ class LTXPlusGenerate:
                             up_model, _ = comfy.sd.load_lora_for_models(up_model, None, lora, upscale_lora_strength, 0)
                             logger.info(f"Applied upscale LoRA: {upscale_lora} (strength={upscale_lora_strength})")
 
-                        if up_has_image_guides:
+                        if has_any_guides:
                             # I2V: compute shift from upscaled latent tokens
                             up_tokens = min(math.prod(upsampled.shape[2:]), x2 * 2)
                             up_shift = up_tokens * mm_shift + b
