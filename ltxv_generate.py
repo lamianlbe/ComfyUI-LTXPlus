@@ -288,26 +288,28 @@ class LTXPlusGenerate:
                 logger.info(f"Audio duration {audio_duration:.2f}s -> overriding num_frames: {num_frames} -> {audio_num_frames}")
                 num_frames = audio_num_frames
 
-        # When upscaling, generate at half resolution -- the 2x latent upscaler
-        # brings it to the target width x height afterwards.
+        # Upscale mode flags — spatial and temporal can be used independently
         gen_width = width
         gen_height = height
-        do_upscale = upscale and upscale_model is not None
-        if upscale and upscale_model is None:
-            logger.info("WARNING: upscale=True but no upscale_model connected -- generating at full resolution")
-        if do_upscale:
+        do_upscale = upscale
+        do_spatial_upscale = do_upscale and upscale_model is not None
+        do_temporal_upscale = do_upscale and temporal_upscale_model is not None
+
+        if do_spatial_upscale:
             gen_width = (width // 2 + 63) // 64 * 64
             gen_height = (height // 2 + 63) // 64 * 64
-            logger.info(f"Upscale enabled: generating at {gen_width}x{gen_height}, target {width}x{height}")
+            logger.info(f"Spatial upscale enabled: generating at {gen_width}x{gen_height}, target {width}x{height}")
 
-        # Temporal upscale: generate at half frame count, then 2x temporal upscale
-        do_temporal_upscale = do_upscale and temporal_upscale_model is not None
+        # Temporal upscale: when combined with spatial, generate at half frame count + half fps.
+        # When temporal-only, generate at full resolution/frames/fps, then 2x temporal afterwards.
         gen_num_frames = num_frames
-        if do_temporal_upscale:
+        if do_temporal_upscale and do_spatial_upscale:
             target_latent_T = ((num_frames - 1) // 8) + 1
             half_latent_T = target_latent_T // 2 + 1
             gen_num_frames = (half_latent_T - 1) * 8 + 1
-            logger.info(f"Temporal upscale enabled: generating {gen_num_frames} frames at {frame_rate / 2:.1f}fps (target {num_frames} frames at {frame_rate}fps)")
+            logger.info(f"Temporal+spatial upscale: generating {gen_num_frames} frames at {frame_rate / 2:.1f}fps (target {num_frames} frames at {frame_rate}fps)")
+        elif do_temporal_upscale:
+            logger.info(f"Temporal-only upscale: generating {gen_num_frames} frames at {frame_rate}fps, will 2x to {num_frames * 2} frames at {frame_rate * 2}fps")
 
         # Create empty latent: [B, C, T, H, W] -- LTXV latent space
         latent = torch.zeros(
@@ -315,9 +317,9 @@ class LTXPlusGenerate:
             device=mm.intermediate_device(),
         )
 
-        # Stamp frame rate onto conditioning -- halved for temporal upscale so the
-        # model generates motion at the correct speed for the full target duration
-        gen_frame_rate = frame_rate / 2 if do_temporal_upscale else frame_rate
+        # Stamp frame rate onto conditioning -- only halve when doing temporal+spatial
+        # (temporal-only generates at full fps, then doubles both frames and fps)
+        gen_frame_rate = frame_rate / 2 if (do_temporal_upscale and do_spatial_upscale) else frame_rate
         positive = node_helpers.conditioning_set_values(positive, {"frame_rate": gen_frame_rate})
         negative = node_helpers.conditioning_set_values(negative, {"frame_rate": gen_frame_rate})
 
@@ -613,16 +615,16 @@ class LTXPlusGenerate:
         # 7. UPSCALE (optional)
         # ----------------------------------------------------------------
 
-        if do_upscale:
+        if do_upscale and (do_spatial_upscale or do_temporal_upscale):
             if upscale_fallback:
                 pre_upscale_latent = {"samples": output_latent["samples"].detach().cpu().clone()}
             try:
                 device = mm.get_torch_device()
                 input_dtype = output_latent["samples"].dtype
 
-                # Temporal upscale first (2x frame count at half resolution = cheap)
+                # Temporal upscale (2x frame count)
                 if do_temporal_upscale:
-                    logger.info("Upscaling video latents (2x temporal at half res)")
+                    logger.info("Upscaling video latents (2x temporal)")
                     self._free_vram()
 
                     temporal_dtype = next(temporal_upscale_model.parameters()).dtype
@@ -637,25 +639,36 @@ class LTXPlusGenerate:
                     t_upsampled = vae.first_stage_model.per_channel_statistics.normalize(t_upsampled)
                     t_upsampled = t_upsampled.to(dtype=input_dtype, device=mm.intermediate_device())
 
-                    target_latent_T = ((num_frames - 1) // 8) + 1
-                    if t_upsampled.shape[2] > target_latent_T:
-                        t_upsampled = t_upsampled[:, :, :target_latent_T]
-                        logger.info(f"Trimmed temporal output to {target_latent_T} latent frames")
+                    if do_spatial_upscale:
+                        # Spatial+temporal: trim to original target frame count
+                        target_latent_T = ((num_frames - 1) // 8) + 1
+                        if t_upsampled.shape[2] > target_latent_T:
+                            t_upsampled = t_upsampled[:, :, :target_latent_T]
+                            logger.info(f"Trimmed temporal output to {target_latent_T} latent frames")
+                        # Restore full frame rate (was halved for generation)
+                        positive = node_helpers.conditioning_set_values(positive, {"frame_rate": frame_rate})
+                        negative = node_helpers.conditioning_set_values(negative, {"frame_rate": frame_rate})
+                    else:
+                        # Temporal-only: frame count is now 2x, fps is now 2x
+                        output_frame_rate = frame_rate * 2
+                        positive = node_helpers.conditioning_set_values(positive, {"frame_rate": output_frame_rate})
+                        negative = node_helpers.conditioning_set_values(negative, {"frame_rate": output_frame_rate})
+                        logger.info(f"Temporal-only: fps {frame_rate} -> {output_frame_rate}")
 
                     output_latent = {"samples": t_upsampled}
                     logger.info(f"After temporal upscale: latent shape {list(t_upsampled.shape)}")
 
-                    # Restore full frame rate (was halved for temporal upscale generation)
-                    positive = node_helpers.conditioning_set_values(positive, {"frame_rate": frame_rate})
-                    negative = node_helpers.conditioning_set_values(negative, {"frame_rate": frame_rate})
-
                 # IC-LoRA: first pass skips spatial upscale (half-res re-diffusion),
                 # then runs again with full spatial upscale + normal settings.
                 _iclora_pre = getattr(guider, 'control_info', None)
-                _iclora_needs_normal_upscale = _iclora_pre is not None and _iclora_pre.get("control_image") is not None
+                _iclora_needs_normal_upscale = do_spatial_upscale and _iclora_pre is not None and _iclora_pre.get("control_image") is not None
                 is_iclora = _iclora_needs_normal_upscale
 
-                if is_iclora:
+                if not do_spatial_upscale:
+                    # Temporal-only: skip spatial upscale, go straight to rediffusion
+                    logger.info("Temporal-only mode: skipping spatial upscale")
+                    upsampled = output_latent["samples"]
+                elif is_iclora:
                     logger.info("IC-LoRA: skipping spatial upscale (half-res re-diffusion)")
                     upsampled = output_latent["samples"]
                 else:
@@ -734,6 +747,10 @@ class LTXPlusGenerate:
                         up_noise_mask = up_get_noise_mask(up_latent_dict)
 
                         up_poses = [int(x.strip()) for x in key_frame_poses.split(",") if x.strip()]
+                        # Temporal-only upscale: frame indices are now 2x
+                        if do_temporal_upscale and not do_spatial_upscale:
+                            up_poses = [p * 2 for p in up_poses]
+                            logger.info(f"Temporal-only: doubled keyframe poses to {up_poses}")
                         up_num_kf = key_frames.shape[0]
                         up_frames_list = [key_frames[i:i+1] for i in range(min(up_num_kf, len(up_poses)))]
 
