@@ -232,6 +232,11 @@ class LTXPlusGenerate:
             logger.info("Error during generation, cleaning up VRAM")
             raise
         finally:
+            # Reset instance state that the success path would have reset.
+            # Critical on interrupt: _upscale_lora_applied left True would make
+            # the next run skip LoRA loading (silent corruption). Also resets
+            # for clean success path so behavior is uniform.
+            self._upscale_lora_applied = False
             self._free_vram()
 
     def _generate_impl(
@@ -1531,8 +1536,20 @@ class LTXPlusGenerate:
         """Clear instance caches, remove dead model entries, trigger GC,
         and flush the CUDA caching allocator so freed blocks are actually
         returned to the driver (otherwise long sessions fragment VRAM and
-        every generation gets progressively slower until ComfyUI restarts)."""
+        every generation gets progressively slower until ComfyUI restarts).
+
+        Also runs two GC passes so that cycles between guider and its
+        ModelPatcher (broken via weakref in multimodal_guider, but we still
+        protect against other cycles) are fully resolved before we scan
+        current_loaded_models for dead entries. Without the second pass,
+        cancelled generations can leave CUDA-tensor-bearing objects alive
+        long enough for ComfyUI's leak scan to flag them."""
         self.loaded_lora = None
+        # First pass: ref-count drop + cycle detection.
+        gc.collect()
+        # Second pass: any finalizers queued during the first pass (e.g. tensor
+        # storage releases that touched the caching allocator) need another
+        # sweep before is_dead() reports accurately.
         gc.collect()
         # Remove dead/orphaned entries from current_loaded_models.
         for i in range(len(mm.current_loaded_models) - 1, -1, -1):

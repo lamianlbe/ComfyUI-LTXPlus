@@ -15,6 +15,7 @@ import contextlib
 import logging
 import math
 import types
+import weakref
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Union
 
@@ -335,11 +336,27 @@ class MultimodalGuider(comfy.samplers.CFGGuider):
         self.last_denoised_v = None
         self.last_denoised_a = None
 
-        # Register ON_PRE_RUN callback to reset step counter (matching official)
+        # Register ON_PRE_RUN callback to reset step counter (matching official).
+        #
+        # NOTE: We deliberately avoid `self._reset_state` here. A bound method
+        # holds a strong ref to `self`; since `self.model_patcher = model` and
+        # ComfyUI's node output cache strongly refs the guider, we would close
+        # a cycle (guider <-> model_patcher) that only the cycle collector can
+        # break. When the user cancels mid-generation, that cycle survives long
+        # enough for ComfyUI's post-execution leak scan to flag it as a model
+        # leak. Using a weakref-based trampoline lets ref-counting alone tear
+        # the patcher down immediately when the guider drops.
+        self_ref = weakref.ref(self)
+
+        def _reset_state_cb(model_patcher=None, _ref=self_ref):
+            inst = _ref()
+            if inst is not None:
+                inst._reset_state(model_patcher)
+
         model.add_callback_with_key(
             comfy.patcher_extension.CallbacksMP.ON_PRE_RUN,
             "mm_guider_on_pre_run",
-            self._reset_state,
+            _reset_state_cb,
         )
 
         super().__init__(model)
