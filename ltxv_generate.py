@@ -849,6 +849,84 @@ class LTXPlusGenerate:
                         upsampled = up_latent_dict["samples"]
                         output_latent = {"samples": upsampled}
 
+                    elif key_frames is not None and key_frame_poses and guide_type == "inject":
+                        # I2V + upscale path: the main pass used inplace
+                        # replacement to pin the keyframe at a specific
+                        # frame. After upscaling the latent, that pinned
+                        # frame is just a spatially-upsampled (blurry)
+                        # version of the original keyframe, and without a
+                        # noise_mask the rediffusion pass will denoise it
+                        # at upscale_denoise strength — drifting the first
+                        # frame away from the input image.
+                        #
+                        # Mirror the main-pass inject semantics here:
+                        # re-encode each keyframe at the new (upscaled)
+                        # spatial resolution, inplace-replace the target
+                        # latent frames, and install a noise_mask so
+                        # rediffusion preserves them just like main sampling
+                        # did.
+                        _, _, up_lat_T, up_lat_H, up_lat_W = upsampled.shape
+                        up_time_sf = up_scale_factors[0]
+
+                        rd_poses = [int(x.strip()) for x in key_frame_poses.split(",") if x.strip()]
+                        if do_temporal_upscale and not do_spatial_upscale:
+                            rd_poses = [p * 2 for p in rd_poses]
+                            logger.info(f"Temporal-only (inject): doubled keyframe poses to {rd_poses}")
+
+                        rd_num_kf = key_frames.shape[0]
+                        rd_frames_list = [key_frames[i:i+1] for i in range(min(rd_num_kf, len(rd_poses)))]
+
+                        up_samples_mut = upsampled.clone()
+                        up_noise_mask = torch.ones(
+                            up_samples_mut.shape[0], 1, up_samples_mut.shape[2],
+                            up_samples_mut.shape[3], up_samples_mut.shape[4],
+                            device=up_samples_mut.device, dtype=up_samples_mut.dtype,
+                        )
+
+                        for fi, (frame, frame_idx) in enumerate(zip(rd_frames_list, rd_poses)):
+                            # Handle negative indices (same convention as
+                            # main pass: -1 = last frame)
+                            total_pixel_frames = (up_lat_T - 1) * up_time_sf + 1
+                            if frame_idx < 0:
+                                frame_idx = max(0, total_pixel_frames + frame_idx)
+
+                            # Pixel frame index -> latent frame index
+                            if frame_idx == 0:
+                                lat_idx = 0
+                            else:
+                                lat_idx = (frame_idx - 1) // up_time_sf + 1
+                            lat_idx = min(lat_idx, up_lat_T - 1)
+
+                            # Resize keyframe to match the UPSCALED pixel
+                            # resolution, then VAE encode. Note: no CRF
+                            # preprocessing here — CRF is for IC-LoRA
+                            # distribution matching, inject mode doesn't
+                            # use it (consistent with the main-pass
+                            # inject path).
+                            pixels = comfy.utils.common_upscale(
+                                frame.movedim(-1, 1),
+                                up_lat_W * up_scale_factors[2],
+                                up_lat_H * up_scale_factors[1],
+                                "bilinear", "center",
+                            ).movedim(1, -1)
+                            t_kf = vae.encode(pixels[:, :, :, :3])
+
+                            cond_length = t_kf.shape[2]
+                            end_idx = min(lat_idx + cond_length, up_lat_T)
+                            actual_length = end_idx - lat_idx
+
+                            up_samples_mut[:, :, lat_idx:end_idx] = t_kf[:, :, :actual_length]
+                            up_noise_mask[:, :, lat_idx:end_idx] = 1.0 - guide_strength
+
+                            logger.info(
+                                f"Upscale re-inject (inject mode) keyframe {fi}: "
+                                f"pixel_idx={frame_idx}, latent_idx={lat_idx}, "
+                                f"strength={guide_strength}"
+                            )
+
+                        upsampled = up_samples_mut
+                        output_latent = {"samples": upsampled}
+
                     # Re-diffusion at upscaled resolution
                     has_any_guides = key_frames is not None and key_frame_poses
                     up_has_guide_mode = has_any_guides and guide_type == "guide"
