@@ -1624,16 +1624,35 @@ class LTXPlusGenerate:
 
     @staticmethod
     def _apply_ffn_chunking(model_clone, num_chunks):
-        """Apply FFN chunking to reduce VRAM usage by processing FFN in chunks along the sequence dim."""
+        """Apply FFN chunking to reduce VRAM usage by processing FFN in chunks along the sequence dim.
+
+        CRITICAL correctness detail: when we capture the "original" ff.forward
+        to wrap, we MUST use the true base implementation, not whatever is
+        currently installed on ff_module. Reason:
+
+        ComfyUI's load_models_gpu() calls detach(unpatch_all=False) on any
+        previously-loaded clone of the same base model (model_management.py
+        ~line 765). That path skips unpatch_model, so our own chunked_forward
+        from the previous generate() remains installed on the shared base
+        module's ff.__dict__['forward']. If this function naively reads
+        ff_module.forward, it captures that leftover wrapper and the new
+        chunked_forward ends up nested inside it.
+
+        With chunks=C, the nesting produces C^N kernel launches per FFN
+        call after N generations — the exact 4× / 16× / 64× slowdown
+        progression we observed (baseline 4.1s → 14.6s → 54.6s/it).
+
+        Fix: cache the true original on the ff module itself on first
+        encounter and always build new wrappers around that cached original,
+        regardless of what ComfyUI's patch state looks like right now.
+        """
         try:
             blocks = model_clone.model.diffusion_model.transformer_blocks
         except AttributeError:
             logger.info("Warning: Could not find transformer_blocks for FFN chunking")
             return
 
-        def make_chunked_forward(ff_module, chunks):
-            original_forward = ff_module.forward
-
+        def make_chunked_forward(original_forward, chunks):
             def chunked_forward(x, *args, **kwargs):
                 if x.shape[1] <= chunks:
                     return original_forward(x, *args, **kwargs)
@@ -1643,14 +1662,20 @@ class LTXPlusGenerate:
                     chunk = x[:, i:i + chunk_size]
                     output_chunks.append(original_forward(chunk, *args, **kwargs))
                 return torch.cat(output_chunks, dim=1)
-
             return chunked_forward
 
         for idx in range(len(blocks)):
             original_ff = blocks[idx].ff
+            # Cache the TRUE original forward on first encounter. On
+            # subsequent generations we pull from the cache instead of
+            # reading the (possibly still-patched) current forward.
+            if not hasattr(original_ff, "_ltxplus_ffn_true_forward"):
+                original_ff._ltxplus_ffn_true_forward = original_ff.forward
+            true_forward = original_ff._ltxplus_ffn_true_forward
+
             model_clone.add_object_patch(
                 f"diffusion_model.transformer_blocks.{idx}.ff.forward",
-                make_chunked_forward(original_ff, num_chunks),
+                make_chunked_forward(true_forward, num_chunks),
             )
 
 
