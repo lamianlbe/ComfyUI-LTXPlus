@@ -1528,7 +1528,10 @@ class LTXPlusGenerate:
         return noise_mask * m
 
     def _free_vram(self):
-        """Clear instance caches, remove dead model entries, and trigger GC."""
+        """Clear instance caches, remove dead model entries, trigger GC,
+        and flush the CUDA caching allocator so freed blocks are actually
+        returned to the driver (otherwise long sessions fragment VRAM and
+        every generation gets progressively slower until ComfyUI restarts)."""
         self.loaded_lora = None
         gc.collect()
         # Remove dead/orphaned entries from current_loaded_models.
@@ -1537,6 +1540,13 @@ class LTXPlusGenerate:
             if entry.is_dead() or entry.model is None:
                 mm.current_loaded_models.pop(i)
         gc.collect()
+        # Release cached-but-unused CUDA blocks (soft_empty_cache handles
+        # cuda/mps/xpu variants internally). Must be after gc.collect() so
+        # just-freed tensors are actually in the free pool.
+        try:
+            mm.soft_empty_cache(force=True)
+        except Exception as e:
+            logger.debug(f"soft_empty_cache failed ({e}); continuing")
 
 
     @staticmethod
