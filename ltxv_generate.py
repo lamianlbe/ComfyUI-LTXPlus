@@ -1543,27 +1543,83 @@ class LTXPlusGenerate:
         protect against other cycles) are fully resolved before we scan
         current_loaded_models for dead entries. Without the second pass,
         cancelled generations can leave CUDA-tensor-bearing objects alive
-        long enough for ComfyUI's leak scan to flag them."""
+        long enough for ComfyUI's leak scan to flag them.
+
+        Key detail: ComfyUI's own free_memory() calls cleanup_models_gc()
+        which logs "Potential memory leak detected" and does a full GC +
+        empty_cache whenever it sees a dead model in current_loaded_models.
+        That full GC runs INSIDE the next generation (right before
+        load_models_gpu), so any dead entry we leave behind becomes a
+        measurable slowdown on the next run's denoise time. Hence the
+        aggressive cleanup here — we want to leave the global state as
+        clean as we can before returning."""
+        import torch as _torch
+
+        def _vram_snapshot(tag):
+            if not _torch.cuda.is_available():
+                return
+            try:
+                logger.info(
+                    f"[VRAM-DIAG] {tag} "
+                    f"reserved={_torch.cuda.memory_reserved()/1e9:.2f}G "
+                    f"allocated={_torch.cuda.memory_allocated()/1e9:.2f}G "
+                    f"max_reserved={_torch.cuda.max_memory_reserved()/1e9:.2f}G "
+                    f"loaded_models={len(mm.current_loaded_models)}"
+                )
+            except Exception:
+                pass
+
+        _vram_snapshot("before_free")
+
         self.loaded_lora = None
-        # First pass: ref-count drop + cycle detection.
+
+        # Two GC passes: the first breaks cycles, the second finalizes
+        # tensor storage released via those cycles (CUDA tensor __del__
+        # doesn't always run in the same sweep that collected its owner).
         gc.collect()
-        # Second pass: any finalizers queued during the first pass (e.g. tensor
-        # storage releases that touched the caching allocator) need another
-        # sweep before is_dead() reports accurately.
         gc.collect()
-        # Remove dead/orphaned entries from current_loaded_models.
+
+        # Remove dead entries from current_loaded_models. This MUST happen
+        # before the next run's free_memory() — otherwise ComfyUI's
+        # cleanup_models_gc() sees a dead entry, logs "Potential memory
+        # leak detected", and forces a full gc.collect() + empty_cache
+        # inside the next denoise (a several-hundred-ms hit per run, which
+        # is exactly the progressive slowdown we see).
         for i in range(len(mm.current_loaded_models) - 1, -1, -1):
             entry = mm.current_loaded_models[i]
             if entry.is_dead() or entry.model is None:
                 mm.current_loaded_models.pop(i)
+
+        # Also use ComfyUI's own cleanup which drops entries whose
+        # underlying real_model() is None. Belt-and-suspenders with the
+        # loop above.
+        try:
+            mm.cleanup_models()
+        except Exception as e:
+            logger.debug(f"cleanup_models failed ({e}); continuing")
+
         gc.collect()
-        # Release cached-but-unused CUDA blocks (soft_empty_cache handles
-        # cuda/mps/xpu variants internally). Must be after gc.collect() so
-        # just-freed tensors are actually in the free pool.
+
+        # Release the allocator pool. On CUDA we do synchronize+empty twice
+        # with a cycle in between — a single empty_cache sometimes leaves
+        # blocks that are "free in the pool but not yet reclaimable" because
+        # an async op on another stream hasn't retired. The double-empty
+        # pattern reliably returns VRAM to the driver.
         try:
             mm.soft_empty_cache(force=True)
         except Exception as e:
             logger.debug(f"soft_empty_cache failed ({e}); continuing")
+        try:
+            if _torch.cuda.is_available():
+                _torch.cuda.synchronize()
+                _torch.cuda.empty_cache()
+                # Reset peak stats so we can observe per-run peaks instead
+                # of a monotonically growing max_reserved number.
+                _torch.cuda.reset_peak_memory_stats()
+        except Exception as e:
+            logger.debug(f"cuda second empty_cache failed ({e}); continuing")
+
+        _vram_snapshot("after_free")
 
 
     @staticmethod
