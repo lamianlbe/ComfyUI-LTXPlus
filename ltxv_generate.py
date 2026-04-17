@@ -306,10 +306,48 @@ class LTXPlusGenerate:
         do_spatial_upscale = do_upscale and upscale_model is not None
         do_temporal_upscale = do_upscale and temporal_upscale_model is not None
 
+        # LTX 2.3 ships two spatial upscalers (1.5x and 2x). The official
+        # LatentUpsampler class exposes `.spatial_scale` directly; read it
+        # so we generate at target/scale instead of hard-coding /2.
+        # Fallback to 2.0 for backwards compat with any custom upscaler
+        # that doesn't expose the attribute.
+        spatial_upscale_factor = 2.0
+        if upscale_model is not None:
+            detected = getattr(upscale_model, "spatial_scale", None)
+            if detected is not None and detected > 0:
+                spatial_upscale_factor = float(detected)
+            else:
+                logger.info(
+                    "Spatial upscale model has no .spatial_scale attribute; "
+                    "assuming 2.0x. If you're using a non-LTXV upscaler with "
+                    "a different factor, the final output size will be off."
+                )
+
         if do_spatial_upscale:
-            gen_width = (width // 2 + 63) // 64 * 64
-            gen_height = (height // 2 + 63) // 64 * 64
-            logger.info(f"Spatial upscale enabled: generating at {gen_width}x{gen_height}, target {width}x{height}")
+            # Generate at target / factor, rounded to a multiple of 32
+            # (LTXV latent is pixel/32 on H,W — the 32-alignment keeps the
+            # upscaler output at the integer target dim when factor is
+            # compatible, e.g. 1.5x requires target divisible by 48,
+            # 2.0x requires target divisible by 64).
+            gen_width = max(32, int(round(width / spatial_upscale_factor)))
+            gen_height = max(32, int(round(height / spatial_upscale_factor)))
+            gen_width = (gen_width + 31) // 32 * 32
+            gen_height = (gen_height + 31) // 32 * 32
+            final_w = int(round(gen_width * spatial_upscale_factor))
+            final_h = int(round(gen_height * spatial_upscale_factor))
+            if final_w != width or final_h != height:
+                logger.info(
+                    f"Spatial upscale {spatial_upscale_factor}x: requested "
+                    f"{width}x{height}, actual output will be {final_w}x{final_h} "
+                    f"(generating at {gen_width}x{gen_height}). "
+                    f"For exact target, set width/height to a multiple of "
+                    f"{int(32 * spatial_upscale_factor)}."
+                )
+            else:
+                logger.info(
+                    f"Spatial upscale {spatial_upscale_factor}x: generating at "
+                    f"{gen_width}x{gen_height}, target {width}x{height}"
+                )
 
         # Temporal upscale: when combined with spatial, generate at half frame count + half fps.
         # When temporal-only, generate at full resolution/frames/fps, then 2x temporal afterwards.
