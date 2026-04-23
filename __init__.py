@@ -4,6 +4,7 @@ from . import load_latent  # noqa: F401 — registers LTXVideoLoadLatent node
 from . import save_latent  # noqa: F401 — registers LTXVideoSaveLatent node
 from . import ltxv_generate  # noqa
 from . import ltxv_iclora_guider  # noqa
+from . import switch  # noqa — registers LTXPlusSwitch10
 from .nodes_registry import NODE_CLASS_MAPPINGS as RUNTIME_NODE_CLASS_MAPPINGS
 from .nodes_registry import (
     NODE_DISPLAY_NAME_MAPPINGS as RUNTIME_NODE_DISPLAY_NAME_MAPPINGS,
