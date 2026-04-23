@@ -87,6 +87,22 @@ class LTXPlusSwitch10:
                         "tooltip": f"Which input (1..{NUM_INPUTS}) to forward.",
                     },
                 ),
+                # Declared for API-payload compatibility with ImpactSwitch
+                # (`GeneralSwitch`) so existing API calls that include
+                # `sel_mode` pass validation. The value is ignored: this
+                # node is hard-wired to select_on_execution.
+                "sel_mode": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "label_on": "select_on_prompt",
+                        "label_off": "select_on_execution",
+                        "forceInput": False,
+                        "tooltip": "Kept for compatibility with ImpactSwitch's API "
+                                   "payload. This node always behaves as "
+                                   "select_on_execution regardless of the value.",
+                    },
+                ),
             },
             "optional": optional,
             "hidden": {
